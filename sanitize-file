@@ -1,0 +1,137 @@
+#!/bin/bash -ue
+## Copyright Manos Pitsidianakis <manos@pitsidianak.is>, 2024-09-10, Licensed under the EUPL-1.2-or-later
+
+## shellcheck -S style -s bash sanitize-filename
+
+set -ue
+
+if [ "$#" -ne 1 ]; then
+    echo "$0 requires a single parameter, a file."
+    exit 1
+fi
+
+verbose=${verbose:=false}
+dry_run=${dry_run:=false}
+
+sanitize-name ()
+{
+  export LC_ALL=C.UTF-8
+  export LANG=C.UTF-8
+
+  tr --squeeze-repeats '[:space:]' '_' \
+    | tr --squeeze-repeats '“”' '"' \
+    | tr --squeeze-repeats '[:punct:]' '-' \
+    | tr --squeeze-repeats --delete  '[:cntrl:]' '' \
+    | tr --squeeze-repeats --delete '[:blank:]' '' \
+    | sed -e 's/^[[:punct:]]*//' -e "s/[[:punct:]]*$//g"
+}
+
+sanitize-file ()
+{
+  local filename
+  local ext
+  local bname
+  local new_fn
+  local text
+  local postaction
+
+  filename=$(realpath "${1}")
+  if [ ! -f "${filename}" ]; then
+    [ "${verbose}" = "true" ] && echo "File not found!"
+    zenity \
+      --error \
+      --no-wrap \
+      --title "File not found!" \
+      --text "Path ${filename} is either not a regular file or does not exist."
+    exit 0
+  fi
+
+  ext=$(echo "${filename}" | awk -F . --assign NAME="${filename}" '$NF != $NAME{print $NF}')
+  [ "${verbose}" = "true" ] && echo filename="${filename}"
+  bname=$(basename "${filename}" '.'"${ext}")
+  [ "${verbose}" = "true" ] && echo bname="${bname}"
+  new_fn=$(echo "${bname}" | sanitize-name)
+  [ "${verbose}" = "true" ] && echo new_fn="${new_fn}"
+
+  if [ -n "${ext}" ]; then
+    new_fn=$(printf "%s.%s" "${new_fn}" "${ext}")
+    [ "${verbose}" = "true" ] && echo ext not empty so new_fn="${new_fn}"
+  fi
+
+  local DimStart="<span foreground=\"DimGrey\">"
+  local DiffBlobDeletionStart="<span foreground=\"#ffffff\" background=\"#a0111f\">"
+  local DiffBlobAdditionStart="<span foreground=\"#ffffff\" background=\"#117f32\">"
+  local SpanEnd="</span>"
+  local ArrowSpace
+  ArrowSpace=$(printf "%s" "$(dirname "${filename}")" | tr --complement '[:blank:]' ' ')
+  local ArrowGlyph="⤹"
+  if [ -n "${NO_COLOR+x}" ]; then
+    DimStart=""
+    DiffBlobDeletionStart=""
+    DiffBlobAdditionStart=""
+    SpanEnd=""
+    ArrowGlyph="to"
+    ArrowSpace=""
+  fi
+
+  text=$(printf "Rename this file?\n\n<tt>%s%s%s%s%s%s</tt>\n<tt>%s</tt>%s\n<tt>%s%s%s%s%s%s</tt>" \
+    "${DimStart}" "$(dirname "${filename}")/" "${SpanEnd}" \
+    "${DiffBlobDeletionStart}" "$(basename "${filename}")" "${SpanEnd}" \
+    "${ArrowSpace}" "${ArrowGlyph}"\
+    "${DimStart}" "$(dirname "${filename}")/" "${SpanEnd}" \
+    "${DiffBlobAdditionStart}" "${new_fn}" "${SpanEnd}")
+
+  [ "${verbose}" = "true" ] && echo question text="${text}"
+
+  [ "${verbose}" = "true" ] && printf "starting zanitty\n-----------------\n"
+
+  if [ -z "${NO_GUI+x}" ]; then
+    zenity \
+      --title "Rename this file?" \
+      --icon "accessories-text-editor" \
+      --no-wrap \
+      --question \
+      --text "${text}" || exit 0
+  fi
+
+  if [ "${dry_run}" = "true" ]; then
+    echo mv -i "${filename}" "$(dirname "${filename}")"/"${new_fn}"
+  else
+    mv -i "${filename}" "$(dirname "${filename}")"/"${new_fn}"
+  fi
+
+
+  text=$(printf "<tt>%s%s%s%s</tt>\nwas renamed to\n<tt>%s</tt>" \
+    "${DimStart}" "$(dirname "${filename}")" "${SpanEnd}" "/$(basename "${filename}")" \
+    "$(dirname "${filename}")/${new_fn}")
+
+  [ "${verbose}" = "true" ] && echo notify text="${text}"
+
+  if [ -n "${NO_GUI+x}" ]; then
+    printf "%s" "$(dirname "${filename}")"/"${new_fn}"
+    exit 0
+  fi
+
+  postaction=$(notify-send --icon "accessories-text-editor" \
+    --urgency "normal" \
+    --app-name="sanitize-filename" \
+    --action=OK=OK \
+    --action=UNDO=Undo \
+    --category="transfer" \
+    "File renamed successfully." \
+    "${text}")
+
+  if [ "${postaction}" = "UNDO" ]; then
+    if [ "${dry_run}" = "true" ]; then
+      echo mv -i "$(dirname "${filename}")"/"${new_fn}" "${filename}"
+    else
+      mv -i "$(dirname "${filename}")"/"${new_fn}" "${filename}"
+    fi
+    printf "%s" "$(dirname "${filename}")"/"${new_fn}"
+    exit 0
+  fi
+  printf "%s" "${filename}"
+  exit 0
+}
+
+sanitize-file "$@"
